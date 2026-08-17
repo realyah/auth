@@ -23,7 +23,7 @@ app.use(cors());
 app.use(express.json());
 
 // MongoDB connection
-const MONGODB_URI = 'mongodb+srv://realyahlee:MeHqq4ZUrVw1YN8M@cluster0.xjs2vyn.mongodb.net/todo?retryWrites=true&w=majority&appName=Cluster0';
+const MONGODB_URI = 'mongodb://localhost:27017/';
 const JWT_SECRET = 'your-secret-key';
 mongoose.connect(MONGODB_URI)
   .then(() => console.log('Connected to MongoDB'))
