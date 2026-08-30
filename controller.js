@@ -91,9 +91,9 @@ const loginUser = async (req, res) => {
 
     // Generate JWT token
     const token = jwt.sign(
-      { 
-        userId: user._id, 
-        username: user.username 
+      {
+        userId: user._id,
+        username: user.username
       },
       JWT_SECRET,
       { expiresIn: '7d' }
@@ -114,6 +114,83 @@ const loginUser = async (req, res) => {
   }
 };
 
+
+
+// Get Current User Profile
+const getUserProfile = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    // Find user by ID and exclude password from response
+    const user = await User.findById(userId).select('-password');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      message: 'User profile retrieved successfully',
+      user: {
+        id: user._id,
+        username: user.username,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Get profile error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+
+// Create or Update All About Me Profile
+const CreateAllAboutMe = async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+  try {
+    const username = req.user.username;
+    const update = { username, ...req.body };
+    const aboutMe = await AboutMe.findOneAndUpdate(
+      { username },
+      update,
+      { new: true, upsert: true, runValidators: true }
+    );
+    const doc = aboutMe && (aboutMe.toObject ? aboutMe.toObject() : aboutMe);
+    if (doc) {
+      const { createdAt, updatedAt, __v, _id, ...rest } = doc;
+      const ordered = { id: _id || doc._id, ...rest, createdAt, updatedAt };
+      return res.status(201).json({ message: 'About Me profile saved successfully', aboutMe: ordered });
+    }
+    return res.status(201).json({ message: 'About Me profile saved successfully', aboutMe });
+  } catch (error) {
+    console.error('Create all about me error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+
+// Get All About Me Profile
+const getAllAboutMe = async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+  try {
+    const username = req.user.username;
+    const aboutMe = await AboutMe.findOne({ username });
+    if (!aboutMe) {
+      return res.status(404).json({ error: 'About Me profile not found' });
+    }
+    const doc = aboutMe && (aboutMe.toObject ? aboutMe.toObject() : aboutMe);
+    if (doc) {
+      const { createdAt, updatedAt, __v, _id, ...rest } = doc;
+      const ordered = { id: _id || doc._id, ...rest, createdAt, updatedAt };
+      return res.status(200).json({ message: 'About Me profile retrieved successfully', aboutMe: ordered });
+    }
+    return res.status(200).json({ message: 'About Me profile retrieved successfully', aboutMe });
+  } catch (error) {
+    console.error('Get all about me error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
 // Create Todo Controller
 const createTodo = async (req, res) => {
   try {
@@ -121,6 +198,9 @@ const createTodo = async (req, res) => {
     const username = req.user.username;
 
     // Validation
+    // if (!token){
+    //   return res.status(400).json({error: 'Can not create title'})
+    // }
     if (!title) {
       return res.status(400).json({ error: 'Title is required' });
     }
@@ -280,8 +360,11 @@ module.exports = {
   authenticateToken,
   registerUser,
   loginUser,
+  getUserProfile,
   createTodo,
   getTodos,
   updateTodo,
-  deleteTodo
+  deleteTodo,
+  CreateAllAboutMe,
+  getAllAboutMe
 }; 

@@ -11,11 +11,14 @@ const app = express();
 const {
   registerUser,
   loginUser,
+  getUserProfile,
   createTodo,
   getTodos,
   updateTodo,
   deleteTodo,
-  authenticateToken
+  authenticateToken,
+  CreateAllAboutMe,
+  getAllAboutMe
 } = require('./controller');
 
 // Middleware
@@ -75,13 +78,42 @@ const todoSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// AboutMe Schema
+const aboutMeSchema = new mongoose.Schema({
+  username: {
+    type: String,
+    required: true,
+    unique: true,
+    ref: 'User'
+  },
+  name: { type: String, required: true, trim: true },
+  birthday: { type: String, trim: true },
+  status: { type: String, trim: true },
+  from: { type: String, trim: true },
+  title: { type: String, trim: true },
+  favoriteColor: { type: String, trim: true },
+  favoriteSong: { type: String, trim: true },
+  favoriteMovie: { type: String, trim: true },
+  favoriteFood: { type: String, trim: true },
+  myHobbies: { type: String, trim: true },
+  wordsThatDescribeMe: { type: String, trim: true },
+  myDreams: { type: String, trim: true },
+  thingsILove: { type: String, trim: true },
+  funFactsAboutMe: { type: String, trim: true },
+  myMoto: { type: String, trim: true }
+}, {
+  timestamps: true
+});
+
 // Models
 const User = mongoose.model('User', userSchema);
 const Todo = mongoose.model('Todo', todoSchema);
+const AboutMe = mongoose.model('AboutMe', aboutMeSchema);
 
 // Make models available globally for controllers
 global.User = User;
 global.Todo = Todo;
+global.AboutMe = AboutMe;
 global.JWT_SECRET = JWT_SECRET;
 global.bcryptjs = bcryptjs;
 global.jwt = jwt;
@@ -102,7 +134,9 @@ app.post('/api/todos', authenticateToken, createTodo);
 app.get('/api/todos', authenticateToken, getTodos);
 app.put('/api/todos/:id', authenticateToken, updateTodo);
 app.delete('/api/todos/:id', authenticateToken, deleteTodo);
-
+app.get('/api/auth/profile', authenticateToken, getUserProfile);
+app.post('/api/allaboutme', authenticateToken, CreateAllAboutMe);
+app.get('/api/allaboutme', authenticateToken, getAllAboutMe);
 // 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({ error: 'Route not found' });
