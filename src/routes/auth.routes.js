@@ -13,5 +13,7 @@ router.post('/login', loginUser);
 
 // Protected routes
 router.get('/profile', authenticateToken, getUserProfile);
+router.get('/profile/:userId', authenticateToken, getUserProfile);
 
 module.exports = router;
+
