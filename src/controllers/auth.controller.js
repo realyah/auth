@@ -49,7 +49,6 @@ const registerUser = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Registration error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -96,7 +95,6 @@ const loginUser = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Login error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -104,6 +102,7 @@ const loginUser = async (req, res) => {
 // Get Current User Profile
 const getUserProfile = async (req, res) => {
   try {
+    // const userId = req.params.userId;
     const userId = req.user.userId;
 
     // Find user by ID and exclude password from response
@@ -123,7 +122,6 @@ const getUserProfile = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Get profile error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
