@@ -1,7 +1,9 @@
 const bcryptjs = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
 const User = require('../models/user.model');
 const { JWT_SECRET, JWT_EXPIRES_IN } = require('../config');
+
 
 // User Registration Controller
 const registerUser = async (req, res) => {
@@ -99,11 +101,19 @@ const loginUser = async (req, res) => {
   }
 };
 
-// Get Current User Profile
+// Get User Profile (by URL param :userId or current authenticated user)
 const getUserProfile = async (req, res) => {
   try {
-    // const userId = req.params.userId;
-    const userId = req.user.userId;
+    const userId = req.params.userId || req.user?.userId;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    // Validate MongoDB ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID format' });
+    }
 
     // Find user by ID and exclude password from response
     const user = await User.findById(userId).select('-password');
@@ -122,6 +132,7 @@ const getUserProfile = async (req, res) => {
     });
 
   } catch (error) {
+    console.error('Get profile error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
