@@ -91,6 +91,7 @@ npm install
 | `POST` | `/api/auth/register` | Register new user | No |
 | `POST` | `/api/auth/login` | Login and get JWT token | No |
 | `GET` | `/api/auth/profile` | Get current user profile | Yes (`Bearer <token>`) |
+| `GET` | `/api/auth/profile/:userId` | Get user profile by ID | Yes (`Bearer <token>`) |
 
 ### 📝 ToDos (`/api/todos`)
 | Method | Endpoint | Description | Auth Required |
