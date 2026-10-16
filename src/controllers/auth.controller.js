@@ -106,7 +106,6 @@ const registerUser = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Register user error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -126,21 +125,40 @@ const loginUser = async (req, res) => {
     // Find user
     const user = await User.findOne({ username });
     if (!user) {
-      return res.status(401).json({ error: "Invalid credentials" });
+      return res.status(401).json({
+        error: "Invalid credentials",
+        status: "FAILED_PASSWORD",
+      });
     }
 
     const now = new Date();
+    const clientIp = getClientIp(req);
+    const rawUserAgent = req.headers["user-agent"] || "";
+    const uaInfo = parseUserAgent(rawUserAgent);
 
-    // Check if account is currently locked
+    // 1. Check if account is currently locked
     if (user.lock_until && user.lock_until > now) {
+      user.login_status = "LOCKED";
+      user.userAgentString = {
+        browser: uaInfo.browser,
+        os: uaInfo.os,
+        deviceType: uaInfo.deviceType,
+        ipAddress: clientIp,
+        loginStatus: "LOCKED",
+        loggedInAt: now,
+      };
+      await user.save();
+
       return res.status(403).json({
         error: "Account is locked due to multiple failed login attempts",
+        status: "LOCKED",
       });
     }
 
     // Check password (supports Argon2 and fallback to bcrypt)
     const isValidPassword = await verifyPassword(user.password, password);
 
+    // 2. Handle invalid password
     if (!isValidPassword) {
       // If previous lock has expired, restart counter from 0
       const currentAttempts =
@@ -154,30 +172,45 @@ const loginUser = async (req, res) => {
       // Lock account if reaching 5 attempts (30 minutes lockout)
       if (newAttempts >= 5) {
         user.lock_until = new Date(now.getTime() + 30 * 60000);
+        user.login_status = "LOCKED";
+        user.userAgentString = {
+          browser: uaInfo.browser,
+          os: uaInfo.os,
+          deviceType: uaInfo.deviceType,
+          ipAddress: clientIp,
+          loginStatus: "LOCKED",
+          loggedInAt: now,
+        };
         await user.save();
 
         return res.status(403).json({
           error: "Account is locked due to multiple failed login attempts",
+          status: "LOCKED",
         });
       }
 
+      user.login_status = "FAILED_PASSWORD";
+      user.userAgentString = {
+        browser: uaInfo.browser,
+        os: uaInfo.os,
+        deviceType: uaInfo.deviceType,
+        ipAddress: clientIp,
+        loginStatus: "FAILED_PASSWORD",
+        loggedInAt: now,
+      };
       await user.save();
+
       return res.status(401).json({
         error: "Invalid credentials",
+        status: "FAILED_PASSWORD",
         remainingAttempts: 5 - newAttempts,
       });
     }
 
-    // Resolve client IP
-    const clientIp = getClientIp(req);
-
-    // Parse user agent into structured browser, OS, and device info
-    const rawUserAgent = req.headers["user-agent"] || "";
-    const uaInfo = parseUserAgent(rawUserAgent);
-
-    // Reset failed login attempts and persist session/device metadata
+    // 3. Handle successful login
     user.failed_login_attempts = 0;
     user.lock_until = null;
+    user.login_status = "SUCCESS";
     user.userAgentString = {
       browser: uaInfo.browser,
       os: uaInfo.os,
@@ -199,6 +232,7 @@ const loginUser = async (req, res) => {
 
     res.json({
       message: "Login successful",
+      status: "SUCCESS",
       token,
       userAgent: user.userAgentString,
       user: {
@@ -207,7 +241,6 @@ const loginUser = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Login user error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -237,12 +270,13 @@ const getUserProfile = async (req, res) => {
       user: {
         id: user._id,
         username: user.username,
+        login_status: user.login_status,
+        userAgentString: user.userAgentString,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
     });
   } catch (error) {
-    console.error("Get profile error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
