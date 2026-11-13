@@ -8,7 +8,9 @@ const createAllAboutMe = async (req, res) => {
 
   try {
     const username = req.user.username;
-    const update = { username, ...req.body };
+    // Ignore client-supplied identity/system fields; username always comes from the token
+    const { username: _ignored, _id, __v, createdAt, updatedAt, ...fields } = req.body || {};
+    const update = { ...fields, username };
     const aboutMe = await AboutMe.findOneAndUpdate(
       { username },
       update,
@@ -30,6 +32,9 @@ const createAllAboutMe = async (req, res) => {
       aboutMe
     });
   } catch (error) {
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ error: error.message });
+    }
     console.error('Create all about me error:', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
