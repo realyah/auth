@@ -23,11 +23,21 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    login_status: {
+      type: String,
+      enum: ["SUCCESS", "FAILED_PASSWORD", "LOCKED"],
+      default: null,
+    },
     userAgentString: {
       browser: { type: String, default: "Unknown" },
       os: { type: String, default: "Unknown" },
       deviceType: { type: String, default: "desktop" },
       ipAddress: { type: String, default: null },
+      loginStatus: {
+        type: String,
+        enum: ["SUCCESS", "FAILED_PASSWORD", "LOCKED"],
+        default: null,
+      },
       loggedInAt: { type: Date, default: Date.now },
     },
   },
