@@ -7,7 +7,16 @@ const startServer = async () => {
     await connectDB();
 
     const server = app.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
+      console.log(`Server is running on http://localhost:${PORT}`);
+    });
+
+    server.on('error', (error) => {
+      if (error.code === 'EADDRINUSE') {
+        console.error(`Port ${PORT} is already in use. Stop the other process or set PORT in .env.`);
+      } else {
+        console.error('Server error:', error);
+      }
+      process.exit(1);
     });
 
     const shutdown = (signal) => {

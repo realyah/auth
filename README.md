@@ -55,7 +55,7 @@ cp .env.example .env
 
 Configure your environment variables:
 ```env
-PORT=3000
+PORT=4000
 MONGODB_URI=mongodb://127.0.0.1:27017/todolist
 JWT_SECRET=your_jwt_secret_key_here
 JWT_EXPIRES_IN=7d
