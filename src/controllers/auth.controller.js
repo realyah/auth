@@ -58,10 +58,12 @@ const getClientIp = (req) => {
 const registerUser = async (req, res) => {
   const userAgent = req.headers["user-agent"] || "Unknown";
   try {
-    const { username, password } = req.body;
+    const { password } = req.body || {};
+    const username =
+      typeof req.body?.username === "string" ? req.body.username.trim() : "";
 
     // Validation
-    if (!username || !password) {
+    if (!username || typeof password !== "string" || !password) {
       return res
         .status(400)
         .json({ error: "Username and password are required" });
@@ -106,6 +108,11 @@ const registerUser = async (req, res) => {
       },
     });
   } catch (error) {
+    // Duplicate key from a concurrent registration with the same username
+    if (error.code === 11000) {
+      return res.status(409).json({ error: "Username already exists" });
+    }
+    console.error("Register error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -113,10 +120,12 @@ const registerUser = async (req, res) => {
 // User Login Controller
 const loginUser = async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { password } = req.body || {};
+    const username =
+      typeof req.body?.username === "string" ? req.body.username.trim() : "";
 
     // Validation
-    if (!username || !password) {
+    if (!username || typeof password !== "string" || !password) {
       return res
         .status(400)
         .json({ error: "Username and password are required" });
@@ -216,6 +225,7 @@ const loginUser = async (req, res) => {
       os: uaInfo.os,
       deviceType: uaInfo.deviceType,
       ipAddress: clientIp,
+      loginStatus: "SUCCESS",
       loggedInAt: now,
     };
     await user.save();
@@ -241,6 +251,7 @@ const loginUser = async (req, res) => {
       },
     });
   } catch (error) {
+    console.error("Login error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -277,6 +288,7 @@ const getUserProfile = async (req, res) => {
       },
     });
   } catch (error) {
+    console.error("Get profile error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
