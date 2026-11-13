@@ -1,4 +1,7 @@
+const mongoose = require('mongoose');
 const Todo = require('../models/todo.model');
+
+const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 
 // Create Todo Controller
 const createTodo = async (req, res) => {
@@ -103,6 +106,10 @@ const updateTodo = async (req, res) => {
       return res.status(400).json({ error: 'Description must be 500 characters or less' });
     }
 
+    if (!isValidId(id)) {
+      return res.status(400).json({ error: 'Invalid todo ID format' });
+    }
+
     // Find and update todo
     const todo = await Todo.findOne({ _id: id, username });
     if (!todo) {
@@ -140,6 +147,10 @@ const deleteTodo = async (req, res) => {
   try {
     const { id } = req.params;
     const username = req.user.username;
+
+    if (!isValidId(id)) {
+      return res.status(400).json({ error: 'Invalid todo ID format' });
+    }
 
     // Find and delete todo
     const todo = await Todo.findOneAndDelete({ _id: id, username });
