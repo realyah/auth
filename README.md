@@ -32,6 +32,8 @@ The codebase follows the industry-standard modular layered architecture (Control
 │   │   └── index.js              # Aggregated router & health check
 │   ├── app.js                    # Express application configuration
 │   └── server.js                 # HTTP server bootstrap & graceful shutdown
+├── test/
+│   └── api.test.js               # Integration tests (node:test)
 ├── .env.example                  # Template for environment variables
 ├── .gitignore                    # Git ignore file
 ├── app.js                        # Backward-compatibility bridge
@@ -44,7 +46,7 @@ The codebase follows the industry-standard modular layered architecture (Control
 ## 🚀 Getting Started
 
 ### 1. Prerequisites
-- [Node.js](https://nodejs.org/) (v16+ recommended)
+- [Node.js](https://nodejs.org/) (v18+)
 - [MongoDB](https://www.mongodb.com/) running locally or via MongoDB Atlas
 
 ### 2. Environment Setup
@@ -59,7 +61,16 @@ PORT=4000
 MONGODB_URI=mongodb://127.0.0.1:27017/todolist
 JWT_SECRET=your_jwt_secret_key_here
 JWT_EXPIRES_IN=7d
+# Optional
+CORS_ORIGIN=http://localhost:3000   # comma-separated; default "*"
+TRUST_PROXY=1                        # only when behind a reverse proxy
 ```
+
+Generate a strong `JWT_SECRET` with:
+```bash
+node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+```
+The server refuses to start in production (`NODE_ENV=production`) without a real secret.
 
 ### 3. Install Dependencies
 ```bash
@@ -74,6 +85,10 @@ npm install
 - **Development mode (with auto-reload):**
   ```bash
   npm run dev
+  ```
+- **Tests** (needs a running MongoDB; uses and drops a throwaway database):
+  ```bash
+  MONGODB_URI_TEST=mongodb://127.0.0.1:27017/auth_test npm test
   ```
 
 ---
@@ -91,7 +106,7 @@ npm install
 | `POST` | `/api/auth/register` | Register new user | No |
 | `POST` | `/api/auth/login` | Login and get JWT token | No |
 | `GET` | `/api/auth/profile` | Get current user profile | Yes (`Bearer <token>`) |
-| `GET` | `/api/auth/profile/:userId` | Get user profile by ID | Yes (`Bearer <token>`) |
+| `GET` | `/api/auth/profile/:userId` | Get user profile by ID (login activity only shown for your own profile) | Yes (`Bearer <token>`) |
 
 ### 📝 ToDos (`/api/todos`)
 | Method | Endpoint | Description | Auth Required |
@@ -104,7 +119,7 @@ npm install
 ### 👤 About Me Profile (`/api/allaboutme`)
 | Method | Endpoint | Description | Auth Required |
 |--------|----------|-------------|---------------|
-| `POST` | `/api/allaboutme` | Create or update About Me profile | Yes |
+| `POST` | `/api/allaboutme` | Create (`201`, `name` required) or partially update (`200`) About Me profile | Yes |
 | `GET` | `/api/allaboutme` | Retrieve About Me profile | Yes |
 
 ---
@@ -114,3 +129,5 @@ For protected endpoints, include the JWT token in the `Authorization` HTTP heade
 ```text
 Authorization: Bearer <your_jwt_token>
 ```
+
+Missing, malformed, invalid or expired tokens return `401`. After 5 failed login attempts an account is locked for 30 minutes (`403`).

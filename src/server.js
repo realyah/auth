@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const app = require('./app');
 const { connectDB } = require('./config/db');
 const { PORT } = require('./config');
@@ -19,10 +20,19 @@ const startServer = async () => {
       process.exit(1);
     });
 
+    let shuttingDown = false;
     const shutdown = (signal) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       console.log(`\nReceived ${signal}. Shutting down gracefully...`);
-      server.close(() => {
+
+      // Force exit if connections don't drain in time
+      setTimeout(() => process.exit(1), 10000).unref();
+
+      server.close(async () => {
         console.log('HTTP server closed.');
+        await mongoose.connection.close();
+        console.log('MongoDB connection closed.');
         process.exit(0);
       });
     };
@@ -37,6 +47,8 @@ const startServer = async () => {
   }
 };
 
-startServer();
+if (require.main === module) {
+  startServer();
+}
 
 module.exports = { startServer };
