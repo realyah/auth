@@ -35,6 +35,7 @@ const serializeUser = (user, isSelf) => {
   if (!isSelf) return publicData;
   return {
     ...publicData,
+    role: user.role || "user", // lets the frontend show the admin dashboard link
     login_status: user.login_status,
     userAgentString: user.userAgentString,
     updatedAt: user.updatedAt,
