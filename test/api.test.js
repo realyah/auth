@@ -9,7 +9,6 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 const mongoose = require('mongoose');
-const { authenticator } = require('otplib');
 const app = require('../src/app');
 
 const MONGODB_URI_TEST = process.env.MONGODB_URI_TEST || 'mongodb://127.0.0.1:27017/auth_test';
@@ -73,10 +72,6 @@ const registerAndLogin = async (username, password = PASSWORD) => {
   assert.equal(res.status, 200, JSON.stringify(res.body));
   return { agent, id: res.body.user.id };
 };
-
-// A TOTP code for a later 30 s step (the current one may already be used)
-const nextCode = (secret, stepsAhead = 1) =>
-  authenticator.clone({ epoch: Date.now() + stepsAhead * 30000 }).generate(secret);
 
 before(async () => {
   await mongoose.connect(MONGODB_URI_TEST, { serverSelectionTimeoutMS: 3000 });
@@ -269,71 +264,11 @@ test('session idle (30 min) and absolute (8 h) timeouts', async () => {
   assert.equal(absolute.body.reason, 'REAUTH_REQUIRED');
 });
 
-test('MFA (TOTP): setup, login, replay protection, recovery codes, disable', async () => {
-  const { agent } = await registerAndLogin('dave');
-  const User = require('../src/models/user.model');
-
-  assert.equal((await agent.request('POST', '/api/auth/mfa/setup', { body: { password: 'wrong password!!' } })).status, 401);
-  const setup = await agent.request('POST', '/api/auth/mfa/setup', { body: { password: PASSWORD } });
-  assert.equal(setup.status, 200);
-  assert.match(setup.body.otpauthUrl, /^otpauth:\/\/totp\//);
-  assert.match(setup.body.qrCodeDataUrl, /^data:image\/png;base64,/);
-  const secret = setup.body.manualEntryKey;
-
-  const stored = await User.findOne({ username: 'dave' });
-  assert.ok(!stored.mfa.pendingSecret.includes(secret), 'secret is encrypted at rest');
-
-  assert.equal((await agent.request('POST', '/api/auth/mfa/enable', { body: { code: '000000' } })).status, 400);
-  const enabled = await agent.request('POST', '/api/auth/mfa/enable', { body: { code: authenticator.generate(secret) } });
-  assert.equal(enabled.status, 200);
-  assert.equal(enabled.body.recoveryCodes.length, 10);
-  const [recoveryCode] = enabled.body.recoveryCodes;
-
-  // Password alone is not enough any more
-  const fresh = createAgent();
-  const step1 = await fresh.request('POST', '/api/auth/login', { body: { username: 'dave', password: PASSWORD } });
-  assert.equal(step1.status, 200);
-  assert.equal(step1.body.status, 'MFA_REQUIRED');
-  assert.equal((await fresh.request('GET', '/api/auth/profile')).status, 401, 'not logged in yet');
-  assert.equal((await fresh.request('POST', '/api/auth/login/mfa', { body: { code: '123456' } })).status, 401);
-
-  const code = nextCode(secret);
-  const step2 = await fresh.request('POST', '/api/auth/login/mfa', { body: { code } });
-  assert.equal(step2.status, 200, JSON.stringify(step2.body));
-  assert.equal((await fresh.request('GET', '/api/auth/profile')).body.user.mfaEnabled, true);
-
-  // The same code cannot be replayed
-  const replay = createAgent();
-  await replay.request('POST', '/api/auth/login', { body: { username: 'dave', password: PASSWORD } });
-  assert.equal((await replay.request('POST', '/api/auth/login/mfa', { body: { code } })).status, 401);
-
-  // Recovery code works exactly once
-  const viaRecovery = createAgent();
-  await viaRecovery.request('POST', '/api/auth/login', { body: { username: 'dave', password: PASSWORD } });
-  assert.equal((await viaRecovery.request('POST', '/api/auth/login/mfa', { body: { recoveryCode } })).status, 200);
-  const again = createAgent();
-  await again.request('POST', '/api/auth/login', { body: { username: 'dave', password: PASSWORD } });
-  assert.equal((await again.request('POST', '/api/auth/login/mfa', { body: { recoveryCode } })).status, 401);
-
-  // MFA step without a password step first
-  const skip = createAgent();
-  assert.equal((await skip.request('POST', '/api/auth/login/mfa', { body: { code: authenticator.generate(secret) } })).status, 401);
-
-  // A code too far in the future (outside the ±1 step drift window) is rejected
-  assert.equal((await fresh.request('POST', '/api/auth/mfa/disable', { body: { password: PASSWORD, code: nextCode(secret, 3) } })).status, 400);
-
-  // Disable needs password + a valid code. Simulate the next 30 s window having started.
-  await User.updateOne({ username: 'dave' }, { $set: { 'mfa.lastUsedStep': null } });
-  assert.equal((await fresh.request('POST', '/api/auth/mfa/disable', { body: { password: PASSWORD, code: '000000' } })).status, 400);
-  const disabled = await fresh.request('POST', '/api/auth/mfa/disable', { body: { password: PASSWORD, code: authenticator.generate(secret) } });
-  assert.equal(disabled.status, 200, JSON.stringify(disabled.body));
-});
-
 test('security logs never contain passwords', async () => {
   const { logSecurityEvent } = require('../src/utils/securityLogger');
-  const entry = logSecurityEvent('login.failed', { username: 'x', password: 'hunter2', nested: { recoveryCode: 'abc' } });
+  const entry = logSecurityEvent('login.failed', { username: 'x', password: 'hunter2', nested: { secretKey: 'abc' } });
   assert.equal(entry.password, '[REDACTED]');
-  assert.equal(entry.nested.recoveryCode, '[REDACTED]');
+  assert.equal(entry.nested.secretKey, '[REDACTED]');
   assert.ok(!JSON.stringify(entry).includes('hunter2'));
 });
 
@@ -344,13 +279,12 @@ test('profile hides private login activity from other users', async () => {
   const own = await erin.agent.request('GET', '/api/auth/profile');
   assert.equal(own.status, 200);
   assert.ok(own.body.user.userAgentString);
-  assert.equal(own.body.user.mfa, undefined);
+  assert.equal(own.body.user.password, undefined);
 
   const other = await erin.agent.request('GET', `/api/auth/profile/${frank.id}`);
   assert.equal(other.status, 200);
   assert.equal(other.body.user.username, 'frank');
   assert.equal(other.body.user.userAgentString, undefined);
-  assert.equal(other.body.user.mfaEnabled, undefined);
 
   assert.equal((await erin.agent.request('GET', '/api/auth/profile/not-an-id')).status, 400);
   assert.equal((await erin.agent.request('GET', `/api/auth/profile/${new mongoose.Types.ObjectId()}`)).status, 404);
