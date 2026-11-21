@@ -1,88 +1,114 @@
 const mongoose = require('mongoose');
 const Todo = require('../models/todo.model');
 
+const STATUSES = ['created', 'done', 'deleted'];
+const TITLE_MAX = 100;
+const DESCRIPTION_MAX = 500;
+
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+const serializeTodo = (todo) => ({
+  id: todo._id,
+  username: todo.username,
+  title: todo.title,
+  description: todo.description,
+  status: todo.status,
+  createdAt: todo.createdAt,
+  updatedAt: todo.updatedAt
+});
+
+// Validate title/description/status from a request body.
+// Returns { error } or { values } containing only the fields that were provided.
+const validateTodoInput = (body, { requireTitle }) => {
+  const { title, description, status } = body;
+  const values = {};
+
+  if (title !== undefined || requireTitle) {
+    if (typeof title !== 'string' || !title.trim()) {
+      return { error: 'Title is required and must be a non-empty string' };
+    }
+    if (title.trim().length > TITLE_MAX) {
+      return { error: `Title must be ${TITLE_MAX} characters or less` };
+    }
+    values.title = title.trim();
+  }
+
+  if (description !== undefined && description !== null) {
+    if (typeof description !== 'string') {
+      return { error: 'Description must be a string' };
+    }
+    if (description.trim().length > DESCRIPTION_MAX) {
+      return { error: `Description must be ${DESCRIPTION_MAX} characters or less` };
+    }
+    values.description = description.trim();
+  } else if (description === null) {
+    values.description = '';
+  }
+
+  if (status !== undefined) {
+    if (!STATUSES.includes(status)) {
+      return { error: `Invalid status. Must be: ${STATUSES.join(', ')}` };
+    }
+    values.status = status;
+  }
+
+  return { values };
+};
+
+const handleError = (res, label, error) => {
+  if (error.name === 'ValidationError' || error.name === 'CastError') {
+    return res.status(400).json({ error: error.message });
+  }
+  console.error(`${label} error:`, error);
+  return res.status(500).json({ error: 'Internal server error' });
+};
 
 // Create Todo Controller
 const createTodo = async (req, res) => {
   try {
-    const { title, description } = req.body;
-    const username = req.user.username;
-
-    // Validation
-    if (!title) {
-      return res.status(400).json({ error: 'Title is required' });
+    const { error, values } = validateTodoInput(req.body || {}, { requireTitle: true });
+    if (error) {
+      return res.status(400).json({ error });
     }
 
-    if (title.length > 100) {
-      return res.status(400).json({ error: 'Title must be 100 characters or less' });
-    }
-
-    if (description && description.length > 500) {
-      return res.status(400).json({ error: 'Description must be 500 characters or less' });
-    }
-
-    // Create todo
-    const todo = new Todo({
-      username,
-      title,
-      description: description || '',
+    const todo = await Todo.create({
+      username: req.user.username,
+      title: values.title,
+      description: values.description || '',
       status: 'created'
     });
 
-    await todo.save();
-
     res.status(201).json({
       message: 'Todo created successfully',
-      todo: {
-        id: todo._id,
-        username: todo.username,
-        title: todo.title,
-        description: todo.description,
-        status: todo.status,
-        createdAt: todo.createdAt,
-        updatedAt: todo.updatedAt
-      }
+      todo: serializeTodo(todo)
     });
-
   } catch (error) {
-    console.error('Create todo error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    handleError(res, 'Create todo', error);
   }
 };
 
 // Get Todos Controller
 const getTodos = async (req, res) => {
   try {
-    const username = req.user.username;
     const { status } = req.query;
+    const query = { username: req.user.username };
 
-    // Build query
-    let query = { username };
-    if (status && ['created', 'done', 'deleted'].includes(status)) {
+    if (status !== undefined) {
+      if (!STATUSES.includes(status)) {
+        return res.status(400).json({ error: `Invalid status. Must be: ${STATUSES.join(', ')}` });
+      }
       query.status = status;
     }
 
-    // Get todos
     const todos = await Todo.find(query).sort({ createdAt: -1 });
 
     res.json({
       message: 'Todos retrieved successfully',
       count: todos.length,
-      todos: todos.map(todo => ({
-        id: todo._id,
-        username: todo.username,
-        title: todo.title,
-        description: todo.description,
-        status: todo.status,
-        createdAt: todo.createdAt,
-        updatedAt: todo.updatedAt
-      }))
+      todos: todos.map(serializeTodo)
     });
-
   } catch (error) {
-    console.error('Get todos error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    handleError(res, 'Get todos', error);
   }
 };
 
@@ -90,55 +116,30 @@ const getTodos = async (req, res) => {
 const updateTodo = async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, status } = req.body;
-    const username = req.user.username;
-
-    // Validation
-    if (status && !['created', 'done', 'deleted'].includes(status)) {
-      return res.status(400).json({ error: 'Invalid status. Must be: created, done, or deleted' });
-    }
-
-    if (title && title.length > 100) {
-      return res.status(400).json({ error: 'Title must be 100 characters or less' });
-    }
-
-    if (description && description.length > 500) {
-      return res.status(400).json({ error: 'Description must be 500 characters or less' });
-    }
 
     if (!isValidId(id)) {
       return res.status(400).json({ error: 'Invalid todo ID format' });
     }
 
-    // Find and update todo
-    const todo = await Todo.findOne({ _id: id, username });
+    const { error, values } = validateTodoInput(req.body || {}, { requireTitle: false });
+    if (error) {
+      return res.status(400).json({ error });
+    }
+
+    const todo = await Todo.findOne({ _id: id, username: req.user.username });
     if (!todo) {
       return res.status(404).json({ error: 'Todo not found' });
     }
 
-    // Update fields
-    if (title !== undefined) todo.title = title;
-    if (description !== undefined) todo.description = description;
-    if (status !== undefined) todo.status = status;
-
+    todo.set(values);
     await todo.save();
 
     res.json({
       message: 'Todo updated successfully',
-      todo: {
-        id: todo._id,
-        username: todo.username,
-        title: todo.title,
-        description: todo.description,
-        status: todo.status,
-        createdAt: todo.createdAt,
-        updatedAt: todo.updatedAt
-      }
+      todo: serializeTodo(todo)
     });
-
   } catch (error) {
-    console.error('Update todo error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    handleError(res, 'Update todo', error);
   }
 };
 
@@ -146,14 +147,12 @@ const updateTodo = async (req, res) => {
 const deleteTodo = async (req, res) => {
   try {
     const { id } = req.params;
-    const username = req.user.username;
 
     if (!isValidId(id)) {
       return res.status(400).json({ error: 'Invalid todo ID format' });
     }
 
-    // Find and delete todo
-    const todo = await Todo.findOneAndDelete({ _id: id, username });
+    const todo = await Todo.findOneAndDelete({ _id: id, username: req.user.username });
     if (!todo) {
       return res.status(404).json({ error: 'Todo not found' });
     }
@@ -166,10 +165,8 @@ const deleteTodo = async (req, res) => {
         status: todo.status
       }
     });
-
   } catch (error) {
-    console.error('Delete todo error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    handleError(res, 'Delete todo', error);
   }
 };
 

@@ -18,7 +18,8 @@ const hashPassword = async (plainPassword) => {
 
 // Password verification helper (supports Argon2 and legacy bcrypt)
 const verifyPassword = async (hash, plainPassword) => {
-  if (hash && hash.startsWith("$argon2")) {
+  if (typeof hash !== "string" || !hash) return false;
+  if (hash.startsWith("$argon2")) {
     return await argon2.verify(hash, plainPassword);
   }
   return await bcryptjs.compare(plainPassword, hash);
@@ -42,17 +43,27 @@ const parseUserAgent = (uaHeader = "") => {
   };
 };
 
-// Extract and normalize client IP address
+// Client IP address. Uses req.ip, which honours X-Forwarded-For only when
+// "trust proxy" is configured (see TRUST_PROXY), so clients cannot spoof it.
 const getClientIp = (req) => {
-  const forwarded = req.headers["x-forwarded-for"];
-  const rawIp = forwarded
-    ? forwarded.split(",")[0].trim()
-    : req.socket?.remoteAddress || "127.0.0.1";
-
-  // Normalize IPv6 mapped IPv4 and IPv6 loopback
-  return rawIp.replace(/^::ffff:/, "").replace(/^::1$/, "127.0.0.1");
+  const rawIp = req.ip || req.socket?.remoteAddress || "";
+  // Normalize IPv6-mapped IPv4 and IPv6 loopback
+  return rawIp.replace(/^::ffff:/, "").replace(/^::1$/, "127.0.0.1") || null;
 };
 
+// Record the outcome of a login attempt on the user document
+const recordLoginAttempt = (user, status, uaInfo, clientIp, now) => {
+  user.login_status = status;
+  user.userAgentString = {
+    ...uaInfo,
+    ipAddress: clientIp,
+    loginStatus: status,
+    loggedInAt: now,
+  };
+};
+
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCK_DURATION_MS = 30 * 60 * 1000;
 
 // User Registration Controller
 const registerUser = async (req, res) => {
@@ -147,15 +158,7 @@ const loginUser = async (req, res) => {
 
     // 1. Check if account is currently locked
     if (user.lock_until && user.lock_until > now) {
-      user.login_status = "LOCKED";
-      user.userAgentString = {
-        browser: uaInfo.browser,
-        os: uaInfo.os,
-        deviceType: uaInfo.deviceType,
-        ipAddress: clientIp,
-        loginStatus: "LOCKED",
-        loggedInAt: now,
-      };
+      recordLoginAttempt(user, "LOCKED", uaInfo, clientIp, now);
       await user.save();
 
       return res.status(403).json({
@@ -178,18 +181,10 @@ const loginUser = async (req, res) => {
       const newAttempts = currentAttempts + 1;
       user.failed_login_attempts = newAttempts;
 
-      // Lock account if reaching 5 attempts (30 minutes lockout)
-      if (newAttempts >= 5) {
-        user.lock_until = new Date(now.getTime() + 30 * 60000);
-        user.login_status = "LOCKED";
-        user.userAgentString = {
-          browser: uaInfo.browser,
-          os: uaInfo.os,
-          deviceType: uaInfo.deviceType,
-          ipAddress: clientIp,
-          loginStatus: "LOCKED",
-          loggedInAt: now,
-        };
+      // Lock account after too many failed attempts
+      if (newAttempts >= MAX_FAILED_ATTEMPTS) {
+        user.lock_until = new Date(now.getTime() + LOCK_DURATION_MS);
+        recordLoginAttempt(user, "LOCKED", uaInfo, clientIp, now);
         await user.save();
 
         return res.status(403).json({
@@ -198,36 +193,24 @@ const loginUser = async (req, res) => {
         });
       }
 
-      user.login_status = "FAILED_PASSWORD";
-      user.userAgentString = {
-        browser: uaInfo.browser,
-        os: uaInfo.os,
-        deviceType: uaInfo.deviceType,
-        ipAddress: clientIp,
-        loginStatus: "FAILED_PASSWORD",
-        loggedInAt: now,
-      };
+      recordLoginAttempt(user, "FAILED_PASSWORD", uaInfo, clientIp, now);
       await user.save();
 
       return res.status(401).json({
         error: "Invalid credentials",
         status: "FAILED_PASSWORD",
-        remainingAttempts: 5 - newAttempts,
+        remainingAttempts: MAX_FAILED_ATTEMPTS - newAttempts,
       });
     }
 
     // 3. Handle successful login
+    // Transparently upgrade legacy bcrypt hashes to Argon2id
+    if (!user.password.startsWith("$argon2")) {
+      user.password = await hashPassword(password);
+    }
     user.failed_login_attempts = 0;
     user.lock_until = null;
-    user.login_status = "SUCCESS";
-    user.userAgentString = {
-      browser: uaInfo.browser,
-      os: uaInfo.os,
-      deviceType: uaInfo.deviceType,
-      ipAddress: clientIp,
-      loginStatus: "SUCCESS",
-      loggedInAt: now,
-    };
+    recordLoginAttempt(user, "SUCCESS", uaInfo, clientIp, now);
     await user.save();
 
     // Generate JWT token
@@ -271,21 +254,30 @@ const getUserProfile = async (req, res) => {
     }
 
     // Find user by ID and exclude password from response
-    const user = await User.findById(userId).select("-password");
+    const user = await User.findById(userId).select("-password -failed_login_attempts -lock_until");
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
+    const isSelf = String(user._id) === String(req.user?.userId);
+
+    // Login activity (IP, device, status) is private: only the owner may see it
     res.json({
       message: "User profile retrieved successfully",
-      user: {
-        id: user._id,
-        username: user.username,
-        login_status: user.login_status,
-        userAgentString: user.userAgentString,
-        createdAt: user.createdAt,
-        updatedAt: user.updatedAt,
-      },
+      user: isSelf
+        ? {
+            id: user._id,
+            username: user.username,
+            login_status: user.login_status,
+            userAgentString: user.userAgentString,
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt,
+          }
+        : {
+            id: user._id,
+            username: user.username,
+            createdAt: user.createdAt,
+          },
     });
   } catch (error) {
     console.error("Get profile error:", error);
