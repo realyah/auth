@@ -100,9 +100,17 @@ const loginEventsQuery = z.object({
   success: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
 });
 
+// A user's own login history: no userId (always the caller), smaller default page
+const myLoginEventsQuery = z.object({
+  days: z.coerce.number().int().min(1).max(365).default(30),
+  limit: z.coerce.number().int().min(1).max(1000).default(100),
+  success: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
+});
+
 module.exports = {
   idParams,
   loginEventsQuery,
+  myLoginEventsQuery,
   userIdParams,
   registerBody,
   loginBody,

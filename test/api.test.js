@@ -481,3 +481,47 @@ test('login location tracking and admin map API', async () => {
     setGeoReader(null);
   }
 });
+
+test('users see only their own login locations', async () => {
+  const LoginEvent = require('../src/models/loginEvent.model');
+  const User = require('../src/models/user.model');
+  const waitForEvents = async (userId, count) => {
+    for (let i = 0; i < 50; i++) {
+      if ((await LoginEvent.countDocuments({ user: userId })) >= count) return;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    throw new Error('login events not written');
+  };
+
+  const lee = await registerAndLogin('lee');
+  const mia = await registerAndLogin('mia');
+  await createAgent().request('POST', '/api/auth/login', { body: { username: 'lee', password: 'wrong password!!' } });
+  await createAgent().request('POST', '/api/auth/login', {
+    body: { username: 'lee', password: PASSWORD, geo: { lat: 17.9757, lng: 102.6331, accuracy: 15 } },
+  });
+  await waitForEvents(lee.id, 3);
+  await waitForEvents(mia.id, 1);
+  assert.equal((await User.findById(lee.id)).role, 'user');
+
+  const mine = await lee.agent.request('GET', '/api/auth/login-events');
+  assert.equal(mine.status, 200);
+  assert.equal(mine.body.count, 3);
+  assert.ok(mine.body.events.every((e) => e.username === 'lee'), 'only own events');
+  assert.ok(mine.body.events.some((e) => e.success === false), 'failed attempts on my account are shown');
+  assert.ok(mine.body.events.some((e) => e.source === 'gps' && e.lat === 17.9757));
+  assert.ok(mine.body.events.some((e) => e.lat === null), 'attempts without a location are listed too');
+  assert.ok(new Date(mine.body.events[0].createdAt) >= new Date(mine.body.events[2].createdAt), 'newest first');
+
+  // Asking for someone else's events is ignored: still only your own
+  const sneaky = await lee.agent.request('GET', `/api/auth/login-events?userId=${mia.id}`);
+  assert.equal(sneaky.status, 200);
+  assert.ok(sneaky.body.events.every((e) => e.username === 'lee'));
+
+  const failedOnly = await lee.agent.request('GET', '/api/auth/login-events?success=false');
+  assert.deepEqual(failedOnly.body.events.map((e) => e.success), [false]);
+
+  assert.equal((await mia.agent.request('GET', '/api/auth/login-events')).body.count, 1);
+  assert.equal((await lee.agent.request('GET', '/api/auth/login-events?limit=5000')).status, 400);
+  assert.equal((await createAgent().request('GET', '/api/auth/login-events')).status, 401);
+  assert.equal((await lee.agent.request('GET', '/api/admin/login-events')).status, 403, 'still no access to everyone');
+});

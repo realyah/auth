@@ -13,6 +13,7 @@ const {
   uploadUserAvatar,
   deleteUserAvatar,
 } = require('../controllers/profile.controller');
+const { getMyLoginEvents } = require('../controllers/loginEvent.controller');
 const { requireAuth } = require('../middleware/auth.middleware');
 const { uploadAvatar } = require('../middleware/upload.middleware');
 const { verifyCaptcha } = require('../middleware/captcha.middleware');
@@ -28,6 +29,7 @@ router.post('/logout', logoutUser);
 
 // Authenticated
 router.get('/session', requireAuth, getSession);
+router.get('/login-events', requireAuth, validate({ query: schemas.myLoginEventsQuery }), getMyLoginEvents);
 router.get('/profile', requireAuth, getUserProfile);
 router.get('/profile/:userId', requireAuth, validate({ params: schemas.userIdParams }), getUserProfile);
 router.put('/profile', requireAuth, validate({ body: schemas.profileBody }), updateUserProfile);
