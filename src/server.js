@@ -1,11 +1,12 @@
 const mongoose = require('mongoose');
 const app = require('./app');
 const { connectDB } = require('./config/db');
+const { connectRedis, closeRedis } = require('./config/redis');
 const { PORT } = require('./config');
 
 const startServer = async () => {
   try {
-    await connectDB();
+    await Promise.all([connectDB(), connectRedis()]);
 
     const server = app.listen(PORT, () => {
       console.log(`Server is running on http://localhost:${PORT}`);
@@ -33,6 +34,7 @@ const startServer = async () => {
         console.log('HTTP server closed.');
         await mongoose.connection.close();
         console.log('MongoDB connection closed.');
+        await closeRedis();
         process.exit(0);
       });
     };
