@@ -32,17 +32,6 @@ const loginBody = z.object({
   password: anyPassword,
 });
 
-const totpCode = z.string().trim().regex(/^\d{6}$/, 'Code must be 6 digits');
-const recoveryCode = z.string().trim().min(8).max(32);
-
-const mfaLoginBody = z
-  .object({ code: totpCode.optional(), recoveryCode: recoveryCode.optional() })
-  .refine((b) => Boolean(b.code) !== Boolean(b.recoveryCode), 'Send either code or recoveryCode');
-
-const mfaSetupBody = z.object({ password: anyPassword });
-const mfaEnableBody = z.object({ code: totpCode });
-const mfaDisableBody = z.object({ password: anyPassword, code: totpCode });
-
 const userIdParams = z.object({ userId: objectId });
 
 // ---------- Player profile ----------
@@ -100,10 +89,6 @@ module.exports = {
   userIdParams,
   registerBody,
   loginBody,
-  mfaLoginBody,
-  mfaSetupBody,
-  mfaEnableBody,
-  mfaDisableBody,
   profileBody,
   PROFILE_FIELDS: Object.keys(PROFILE_LIMITS),
   createTodoBody,
