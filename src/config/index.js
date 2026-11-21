@@ -12,13 +12,12 @@ const PLACEHOLDER_SECRETS = new Set(["", "change_me", "your_session_secret_here"
 
 // Secrets: required and strong in production, random per-process in development
 // (sessions are then lost on restart, which is fine for local work).
-const requireSecret = (name, { minLength = 32, hex = false } = {}) => {
+const requireSecret = (name, { minLength = 32 } = {}) => {
   const value = process.env[name] || "";
-  const valid = !PLACEHOLDER_SECRETS.has(value) && value.length >= minLength &&
-    (!hex || /^[0-9a-fA-F]+$/.test(value));
+  const valid = !PLACEHOLDER_SECRETS.has(value) && value.length >= minLength;
   if (valid) return value;
   if (IS_PRODUCTION) {
-    throw new Error(`${name} must be set to a strong secret (${minLength}+ ${hex ? "hex " : ""}characters) in production`);
+    throw new Error(`${name} must be set to a strong secret (${minLength}+ characters) in production`);
   }
   if (NODE_ENV !== "test") {
     console.warn(`Warning: ${name} is not set; using a random value for this process. Set it in .env.`);
@@ -85,12 +84,6 @@ module.exports = {
   LOGIN_RATE_LIMIT_MAX: Number(process.env.LOGIN_RATE_LIMIT_MAX) || 10,
   MAX_FAILED_ATTEMPTS: 5,
   LOCK_DURATION_MS: 30 * MINUTE,
-  MFA_PENDING_TIMEOUT_MS: 5 * MINUTE,
-  MFA_MAX_ATTEMPTS: 5,
-
-  // 32-byte hex key used to encrypt TOTP secrets at rest
-  MFA_ENCRYPTION_KEY: requireSecret("MFA_ENCRYPTION_KEY", { minLength: 64, hex: true }).slice(0, 64),
-  MFA_ISSUER: process.env.MFA_ISSUER || "ToDo App",
 
   // Cloudflare Turnstile: CAPTCHA on login/register is enforced only when set
   TURNSTILE_SECRET_KEY: process.env.TURNSTILE_SECRET_KEY || "",
