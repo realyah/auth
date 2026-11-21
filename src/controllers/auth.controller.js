@@ -1,15 +1,12 @@
 const UAParser = require("ua-parser-js");
 const User = require("../models/user.model");
 const { hashPassword, verifyPassword, needsRehash, burnVerifyTime } = require("../utils/password");
-const { verifyTotp, consumeRecoveryCode } = require("../utils/totp");
 const { logSecurityEvent } = require("../utils/securityLogger");
 const { regenerateSession, saveSession, destroySession } = require("../middleware/session.middleware");
 const { getCsrfToken } = require("../middleware/csrf.middleware");
 const {
   MAX_FAILED_ATTEMPTS,
   LOCK_DURATION_MS,
-  MFA_PENDING_TIMEOUT_MS,
-  MFA_MAX_ATTEMPTS,
   SESSION_IDLE_TIMEOUT_MS,
   SESSION_ABSOLUTE_TIMEOUT_MS,
 } = require("../config");
@@ -17,8 +14,6 @@ const {
 // One message for every login failure: wrong username, wrong password, locked
 // account. Distinct messages would let attackers discover which usernames exist.
 const INVALID_LOGIN = "Invalid username or password";
-const INVALID_MFA = "Invalid authentication code";
-const MFA_EXPIRED = "Login session expired, please log in again";
 
 // Parse User-Agent header into structured browser, OS, and device info
 const parseUserAgent = (uaHeader = "") => {
@@ -50,7 +45,7 @@ const recordLoginAttempt = (req, user, status) => {
   };
 };
 
-// Count a failed password/MFA attempt; locks the account at MAX_FAILED_ATTEMPTS
+// Count a failed password attempt; locks the account at MAX_FAILED_ATTEMPTS
 const registerFailedAttempt = (req, user) => {
   const now = new Date();
   // A lock that has expired starts the counter again from zero
@@ -71,7 +66,6 @@ const isLocked = (user) => Boolean(user.lock_until && user.lock_until > new Date
 const publicUser = (user) => ({
   id: user._id,
   username: user.username,
-  mfaEnabled: Boolean(user.mfa?.enabled),
 });
 
 // Successful authentication: new session id (prevents session fixation), fresh
@@ -167,76 +161,6 @@ const loginUser = async (req, res, next) => {
       user.password = await hashPassword(password);
     }
 
-    if (user.mfa?.enabled) {
-      await user.save();
-      // Password step done; the session is NOT authenticated until the TOTP step
-      await regenerateSession(req);
-      req.session.pendingMfa = { userId: String(user._id), startedAt: Date.now(), attempts: 0 };
-      const token = getCsrfToken(req);
-      await saveSession(req);
-      logSecurityEvent("login.mfa_required", { req, level: "info", userId: String(user._id), username });
-      return res.json({
-        message: "Enter the code from your authenticator app",
-        status: "MFA_REQUIRED",
-        mfaRequired: true,
-        csrfToken: token,
-      });
-    }
-
-    return completeLogin(req, res, user);
-  } catch (error) {
-    next(error);
-  }
-};
-
-// POST /api/auth/login/mfa — second step: { code } or { recoveryCode }
-const loginMfa = async (req, res, next) => {
-  try {
-    const pending = req.session.pendingMfa;
-    if (!pending || Date.now() - pending.startedAt > MFA_PENDING_TIMEOUT_MS) {
-      delete req.session.pendingMfa;
-      return res.status(401).json({ error: MFA_EXPIRED });
-    }
-
-    pending.attempts += 1;
-    if (pending.attempts > MFA_MAX_ATTEMPTS) {
-      delete req.session.pendingMfa;
-      logSecurityEvent("login.mfa_attempts_exceeded", { req, userId: pending.userId });
-      return res.status(401).json({ error: MFA_EXPIRED });
-    }
-
-    const user = await User.findById(pending.userId);
-    if (!user || !user.mfa?.enabled || isLocked(user)) {
-      delete req.session.pendingMfa;
-      return res.status(401).json({ error: MFA_EXPIRED });
-    }
-
-    const { code, recoveryCode } = req.validated.body;
-    let ok = false;
-    if (code) {
-      const step = verifyTotp(user.mfa.secret, code, user.mfa.lastUsedStep);
-      if (step !== null) {
-        user.mfa.lastUsedStep = step;
-        ok = true;
-      }
-    } else {
-      const remaining = consumeRecoveryCode(user.mfa.recoveryCodes, recoveryCode);
-      if (remaining) {
-        user.mfa.recoveryCodes = remaining;
-        ok = true;
-        logSecurityEvent("mfa.recovery_code_used", {
-          req, userId: String(user._id), remainingCodes: remaining.length,
-        });
-      }
-    }
-
-    if (!ok) {
-      registerFailedAttempt(req, user);
-      await user.save();
-      logSecurityEvent("login.mfa_failed", { req, userId: String(user._id), username: user.username });
-      return res.status(401).json({ error: INVALID_MFA });
-    }
-
     return completeLogin(req, res, user);
   } catch (error) {
     next(error);
@@ -266,7 +190,6 @@ module.exports = {
   csrfToken,
   registerUser,
   loginUser,
-  loginMfa,
   logoutUser,
   getSession,
   // Re-exported for the legacy controller.js bridge
