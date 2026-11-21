@@ -15,6 +15,12 @@ const userSchema = new mongoose.Schema(
       required: true,
       minlength: 6,
     },
+    // "admin" is granted only with `npm run make-admin -- <username>`, never through the API
+    role: {
+      type: String,
+      enum: ["user", "admin"],
+      default: "user",
+    },
     failed_login_attempts: {
       type: Number,
       default: 0,
@@ -27,6 +33,21 @@ const userSchema = new mongoose.Schema(
       type: String,
       enum: ["SUCCESS", "FAILED_PASSWORD", "LOCKED"],
       default: null,
+    },
+    // Stored file name of the profile picture inside UPLOAD_DIR/avatars (null = none)
+    avatar: {
+      type: String,
+      default: null,
+    },
+    // Public player details, editable by the owner via PUT /api/auth/profile
+    profile: {
+      displayName: { type: String, trim: true, maxlength: 50 },
+      bio: { type: String, trim: true, maxlength: 500 },
+      country: { type: String, trim: true, maxlength: 60 },
+      dateOfBirth: { type: String, trim: true, maxlength: 20 },
+      gender: { type: String, trim: true, maxlength: 20 },
+      position: { type: String, trim: true, maxlength: 50 },
+      team: { type: String, trim: true, maxlength: 60 },
     },
     userAgentString: {
       browser: { type: String, default: "Unknown" },

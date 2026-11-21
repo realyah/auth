@@ -1,29 +1,18 @@
 const AboutMe = require('../models/aboutMe.model');
 
-// Fields a client may set; everything else (username, _id, timestamps, unknown keys) is ignored.
-const EDITABLE_FIELDS = Object.keys(AboutMe.schema.paths).filter(
-  (path) => !['username', '_id', '__v', 'createdAt', 'updatedAt'].includes(path)
-);
-
 const serializeAboutMe = (aboutMe) => {
   const { _id, __v, createdAt, updatedAt, ...rest } = aboutMe.toObject();
   return { id: _id, ...rest, createdAt, updatedAt };
 };
 
-// Create or Update All About Me Profile
-const createAllAboutMe = async (req, res) => {
+// Create or Update All About Me Profile.
+// Body is validated by Zod: only known fields, strings or null, max 500 chars.
+const createAllAboutMe = async (req, res, next) => {
   try {
     const username = req.user.username;
-    const body = req.body && typeof req.body === 'object' ? req.body : {};
-
-    const fields = {};
-    for (const key of EDITABLE_FIELDS) {
-      if (body[key] === undefined) continue;
-      if (body[key] !== null && typeof body[key] !== 'string') {
-        return res.status(400).json({ error: `Field "${key}" must be a string` });
-      }
-      fields[key] = body[key];
-    }
+    const fields = Object.fromEntries(
+      Object.entries(req.validated.body).filter(([, value]) => value !== undefined)
+    );
 
     let aboutMe = await AboutMe.findOne({ username });
     const isNew = !aboutMe;
@@ -40,19 +29,15 @@ const createAllAboutMe = async (req, res) => {
       aboutMe: serializeAboutMe(aboutMe)
     });
   } catch (error) {
-    if (error.name === 'ValidationError' || error.name === 'CastError') {
-      return res.status(400).json({ error: error.message });
-    }
     if (error.code === 11000) {
       return res.status(409).json({ error: 'About Me profile was modified concurrently, please retry' });
     }
-    console.error('Create all about me error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+    next(error);
   }
 };
 
 // Get All About Me Profile
-const getAllAboutMe = async (req, res) => {
+const getAllAboutMe = async (req, res, next) => {
   try {
     const aboutMe = await AboutMe.findOne({ username: req.user.username });
 
@@ -65,8 +50,7 @@ const getAllAboutMe = async (req, res) => {
       aboutMe: serializeAboutMe(aboutMe)
     });
   } catch (error) {
-    console.error('Get all about me error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+    next(error);
   }
 };
 

@@ -1,45 +1,30 @@
-const bcryptjs = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const mongoose = require("mongoose");
-const argon2 = require("argon2");
+const UAParser = require("ua-parser-js");
 const User = require("../models/user.model");
-const UAParser = require('ua-parser-js');
-const { JWT_SECRET, JWT_EXPIRES_IN } = require("../config");
+const LoginEvent = require("../models/loginEvent.model");
+const { lookupIp, pickLocation } = require("../utils/geo");
+const { hashPassword, verifyPassword, needsRehash, burnVerifyTime } = require("../utils/password");
+const { logSecurityEvent } = require("../utils/securityLogger");
+const { regenerateSession, saveSession, destroySession } = require("../middleware/session.middleware");
+const { getCsrfToken } = require("../middleware/csrf.middleware");
+const {
+  MAX_FAILED_ATTEMPTS,
+  LOCK_DURATION_MS,
+  SESSION_IDLE_TIMEOUT_MS,
+  SESSION_ABSOLUTE_TIMEOUT_MS,
+} = require("../config");
 
-// Password hashing helper using Argon2id
-const hashPassword = async (plainPassword) => {
-  return await argon2.hash(plainPassword, {
-    type: argon2.argon2id,
-    memoryCost: 2 ** 16, // 64 MB
-    timeCost: 3,
-    parallelism: 4,
-  });
-};
-
-// Password verification helper (supports Argon2 and legacy bcrypt)
-const verifyPassword = async (hash, plainPassword) => {
-  if (typeof hash !== "string" || !hash) return false;
-  if (hash.startsWith("$argon2")) {
-    return await argon2.verify(hash, plainPassword);
-  }
-  return await bcryptjs.compare(plainPassword, hash);
-};
+// One message for every login failure: wrong username, wrong password, locked
+// account. Distinct messages would let attackers discover which usernames exist.
+const INVALID_LOGIN = "Invalid username or password";
 
 // Parse User-Agent header into structured browser, OS, and device info
 const parseUserAgent = (uaHeader = "") => {
   const parsed = UAParser(uaHeader);
-  const browser = parsed.browser.name
-    ? [parsed.browser.name, parsed.browser.version].filter(Boolean).join(" ")
-    : "Unknown";
-  const os = parsed.os.name
-    ? [parsed.os.name, parsed.os.version].filter(Boolean).join(" ")
-    : "Unknown";
-  const deviceType = parsed.device.type || "desktop";
-
+  const join = (part) => (part.name ? [part.name, part.version].filter(Boolean).join(" ") : "Unknown");
   return {
-    browser,
-    os,
-    deviceType,
+    browser: join(parsed.browser),
+    os: join(parsed.os),
+    deviceType: parsed.device.type || "desktop",
   };
 };
 
@@ -47,246 +32,187 @@ const parseUserAgent = (uaHeader = "") => {
 // "trust proxy" is configured (see TRUST_PROXY), so clients cannot spoof it.
 const getClientIp = (req) => {
   const rawIp = req.ip || req.socket?.remoteAddress || "";
-  // Normalize IPv6-mapped IPv4 and IPv6 loopback
   return rawIp.replace(/^::ffff:/, "").replace(/^::1$/, "127.0.0.1") || null;
 };
 
 // Record the outcome of a login attempt on the user document
-const recordLoginAttempt = (user, status, uaInfo, clientIp, now) => {
+const recordLoginAttempt = (req, user, status) => {
+  const now = new Date();
   user.login_status = status;
   user.userAgentString = {
-    ...uaInfo,
-    ipAddress: clientIp,
+    ...parseUserAgent(req.headers["user-agent"]),
+    ipAddress: getClientIp(req),
     loginStatus: status,
     loggedInAt: now,
   };
 };
 
-const MAX_FAILED_ATTEMPTS = 5;
-const LOCK_DURATION_MS = 30 * 60 * 1000;
+// Store where a login attempt came from (success or failure). Not awaited: a
+// logging problem must never fail or slow down the login itself.
+const recordLoginEvent = (req, user, success) => {
+  const ip = getClientIp(req) || "unknown";
+  const ipGeo = lookupIp(ip);
+  const location = pickLocation(ipGeo, req.validated?.body?.geo);
+  LoginEvent.create({
+    user: user?._id ?? null,
+    success,
+    ip,
+    country: ipGeo.country,
+    city: ipGeo.city,
+    ...location,
+    userAgent: req.get("user-agent")?.slice(0, 300),
+  }).catch((error) => console.error("Record login event error:", error));
+};
 
-// User Registration Controller
-const registerUser = async (req, res) => {
-  const userAgent = req.headers["user-agent"] || "Unknown";
+// Count a failed password attempt; locks the account at MAX_FAILED_ATTEMPTS
+const registerFailedAttempt = (req, user) => {
+  const now = new Date();
+  // A lock that has expired starts the counter again from zero
+  const previous = user.lock_until && user.lock_until <= now ? 0 : user.failed_login_attempts || 0;
+  user.failed_login_attempts = previous + 1;
+
+  if (user.failed_login_attempts >= MAX_FAILED_ATTEMPTS) {
+    user.lock_until = new Date(now.getTime() + LOCK_DURATION_MS);
+    recordLoginAttempt(req, user, "LOCKED");
+    logSecurityEvent("account.locked", { req, level: "error", userId: String(user._id), username: user.username });
+  } else {
+    recordLoginAttempt(req, user, "FAILED_PASSWORD");
+  }
+};
+
+const isLocked = (user) => Boolean(user.lock_until && user.lock_until > new Date());
+
+const publicUser = (user) => ({
+  id: user._id,
+  username: user.username,
+});
+
+// Successful authentication: new session id (prevents session fixation), fresh
+// CSRF token, timestamps for the idle and absolute timeouts.
+const completeLogin = async (req, res, user) => {
+  user.failed_login_attempts = 0;
+  user.lock_until = null;
+  recordLoginAttempt(req, user, "SUCCESS");
+  await user.save();
+
+  await regenerateSession(req);
+  const now = Date.now();
+  req.session.userId = String(user._id);
+  req.session.authenticatedAt = now;
+  req.session.lastSeenAt = now;
+  const csrfToken = getCsrfToken(req);
+  await saveSession(req);
+
+  logSecurityEvent("login.success", { req, level: "info", userId: String(user._id), username: user.username });
+  recordLoginEvent(req, user, true);
+
+  return res.json({
+    message: "Login successful",
+    status: "SUCCESS",
+    csrfToken,
+    user: publicUser(user),
+    userAgent: user.userAgentString,
+  });
+};
+
+// GET /api/auth/csrf-token — call once on app load and after logout
+const csrfToken = (req, res) => {
+  res.json({ csrfToken: getCsrfToken(req) });
+};
+
+// POST /api/auth/register
+const registerUser = async (req, res, next) => {
   try {
-    const { password } = req.body || {};
-    const username =
-      typeof req.body?.username === "string" ? req.body.username.trim() : "";
+    const { username, password } = req.validated.body;
 
-    // Validation
-    if (!username || typeof password !== "string" || !password) {
-      return res
-        .status(400)
-        .json({ error: "Username and password are required" });
-    }
-
-    if (username.length < 3 || username.length > 30) {
-      return res
-        .status(400)
-        .json({ error: "Username must be between 3 and 30 characters" });
-    }
-
-    if (password.length < 6) {
-      return res
-        .status(400)
-        .json({ error: "Password must be at least 6 characters long" });
-    }
-
-    // Check if user already exists
-    const existingUser = await User.findOne({ username });
+    const existingUser = await User.exists({ username });
     if (existingUser) {
       return res.status(409).json({ error: "Username already exists" });
     }
 
-    // Hash password with Argon2
-    const hashedPassword = await hashPassword(password);
-
-    // Create user
-    const user = new User({
-      username,
-      password: hashedPassword,
-    });
-
-    await user.save();
+    const user = await User.create({ username, password: await hashPassword(password) });
+    logSecurityEvent("user.registered", { req, level: "info", userId: String(user._id), username });
 
     res.status(201).json({
       message: "User registered successfully",
-      userAgent,
-      user: {
-        id: user._id,
-        username: user.username,
-        createdAt: user.createdAt,
-      },
+      user: { id: user._id, username: user.username, createdAt: user.createdAt },
     });
   } catch (error) {
     // Duplicate key from a concurrent registration with the same username
     if (error.code === 11000) {
       return res.status(409).json({ error: "Username already exists" });
     }
-    console.error("Register error:", error);
-    res.status(500).json({ error: "Internal server error" });
+    next(error);
   }
 };
 
-// User Login Controller
-const loginUser = async (req, res) => {
+// POST /api/auth/login
+const loginUser = async (req, res, next) => {
   try {
-    const { password } = req.body || {};
-    const username =
-      typeof req.body?.username === "string" ? req.body.username.trim() : "";
-
-    // Validation
-    if (!username || typeof password !== "string" || !password) {
-      return res
-        .status(400)
-        .json({ error: "Username and password are required" });
-    }
-
-    // Find user
+    const { username, password } = req.validated.body;
     const user = await User.findOne({ username });
+    const fail = (reason, extra = {}) => {
+      logSecurityEvent("login.failed", { req, username, reason, ...extra });
+      recordLoginEvent(req, user, false);
+      return res.status(401).json({ error: INVALID_LOGIN });
+    };
+
     if (!user) {
-      return res.status(401).json({
-        error: "Invalid credentials",
-        status: "FAILED_PASSWORD",
-      });
+      await burnVerifyTime(password); // same timing as a real password check
+      return fail("unknown_user");
     }
 
-    const now = new Date();
-    const clientIp = getClientIp(req);
-    const rawUserAgent = req.headers["user-agent"] || "";
-    const uaInfo = parseUserAgent(rawUserAgent);
+    // Always verify, even when locked, so all failure paths take the same time
+    const passwordOk = await verifyPassword(user.password, password);
 
-    // 1. Check if account is currently locked
-    if (user.lock_until && user.lock_until > now) {
-      recordLoginAttempt(user, "LOCKED", uaInfo, clientIp, now);
+    if (isLocked(user)) {
+      recordLoginAttempt(req, user, "LOCKED");
       await user.save();
-
-      return res.status(403).json({
-        error: "Account is locked due to multiple failed login attempts",
-        status: "LOCKED",
-      });
+      return fail("account_locked", { userId: String(user._id) });
     }
 
-    // Check password (supports Argon2 and fallback to bcrypt)
-    const isValidPassword = await verifyPassword(user.password, password);
-
-    // 2. Handle invalid password
-    if (!isValidPassword) {
-      // If previous lock has expired, restart counter from 0
-      const currentAttempts =
-        user.lock_until && user.lock_until <= now
-          ? 0
-          : user.failed_login_attempts || 0;
-
-      const newAttempts = currentAttempts + 1;
-      user.failed_login_attempts = newAttempts;
-
-      // Lock account after too many failed attempts
-      if (newAttempts >= MAX_FAILED_ATTEMPTS) {
-        user.lock_until = new Date(now.getTime() + LOCK_DURATION_MS);
-        recordLoginAttempt(user, "LOCKED", uaInfo, clientIp, now);
-        await user.save();
-
-        return res.status(403).json({
-          error: "Account is locked due to multiple failed login attempts",
-          status: "LOCKED",
-        });
-      }
-
-      recordLoginAttempt(user, "FAILED_PASSWORD", uaInfo, clientIp, now);
+    if (!passwordOk) {
+      registerFailedAttempt(req, user);
       await user.save();
-
-      return res.status(401).json({
-        error: "Invalid credentials",
-        status: "FAILED_PASSWORD",
-        remainingAttempts: MAX_FAILED_ATTEMPTS - newAttempts,
-      });
+      return fail("bad_password", { userId: String(user._id), failedAttempts: user.failed_login_attempts });
     }
 
-    // 3. Handle successful login
-    // Transparently upgrade legacy bcrypt hashes to Argon2id
-    if (!user.password.startsWith("$argon2")) {
+    // Upgrade legacy bcrypt / weaker Argon2 hashes while we have the plaintext
+    if (needsRehash(user.password)) {
       user.password = await hashPassword(password);
     }
-    user.failed_login_attempts = 0;
-    user.lock_until = null;
-    recordLoginAttempt(user, "SUCCESS", uaInfo, clientIp, now);
-    await user.save();
 
-    // Generate JWT token
-    const token = jwt.sign(
-      {
-        userId: user._id,
-        username: user.username,
-      },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN },
-    );
-
-    res.json({
-      message: "Login successful",
-      status: "SUCCESS",
-      token,
-      userAgent: user.userAgentString,
-      user: {
-        id: user._id,
-        username: user.username,
-      },
-    });
+    return completeLogin(req, res, user);
   } catch (error) {
-    console.error("Login error:", error);
-    res.status(500).json({ error: "Internal server error" });
+    next(error);
   }
 };
 
-// Get User Profile (by URL param :userId or current authenticated user)
-const getUserProfile = async (req, res) => {
-  try {
-    const userId = req.params.userId || req.user?.userId;
+// POST /api/auth/logout
+const logoutUser = async (req, res) => {
+  const userId = req.session?.userId;
+  await destroySession(req, res);
+  if (userId) logSecurityEvent("logout", { req, level: "info", userId });
+  res.json({ message: "Logged out successfully" });
+};
 
-    if (!userId) {
-      return res.status(400).json({ error: "User ID is required" });
-    }
-
-    // Validate MongoDB ObjectId format
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ error: "Invalid user ID format" });
-    }
-
-    // Find user by ID and exclude password from response
-    const user = await User.findById(userId).select("-password -failed_login_attempts -lock_until");
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    const isSelf = String(user._id) === String(req.user?.userId);
-
-    // Login activity (IP, device, status) is private: only the owner may see it
-    res.json({
-      message: "User profile retrieved successfully",
-      user: isSelf
-        ? {
-            id: user._id,
-            username: user.username,
-            login_status: user.login_status,
-            userAgentString: user.userAgentString,
-            createdAt: user.createdAt,
-            updatedAt: user.updatedAt,
-          }
-        : {
-            id: user._id,
-            username: user.username,
-            createdAt: user.createdAt,
-          },
-    });
-  } catch (error) {
-    console.error("Get profile error:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
+// GET /api/auth/session — who is logged in and when the session ends
+const getSession = (req, res) => {
+  const { authenticatedAt, lastSeenAt } = req.session;
+  res.json({
+    authenticated: true,
+    user: { id: req.user.userId, username: req.user.username },
+    idleExpiresAt: new Date(lastSeenAt + SESSION_IDLE_TIMEOUT_MS).toISOString(),
+    reauthRequiredAt: new Date(authenticatedAt + SESSION_ABSOLUTE_TIMEOUT_MS).toISOString(),
+  });
 };
 
 module.exports = {
+  csrfToken,
   registerUser,
   loginUser,
-  getUserProfile,
+  logoutUser,
+  getSession,
+  // Re-exported for the legacy controller.js bridge
+  ...require("./profile.controller"),
 };

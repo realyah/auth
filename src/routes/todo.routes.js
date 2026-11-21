@@ -6,14 +6,16 @@ const {
   updateTodo,
   deleteTodo
 } = require('../controllers/todo.controller');
-const { authenticateToken } = require('../middleware/auth.middleware');
+const { requireAuth } = require('../middleware/auth.middleware');
+const { validate } = require('../middleware/validate.middleware');
+const schemas = require('../validation/schemas');
 
 // Protect all todo routes
-router.use(authenticateToken);
+router.use(requireAuth);
 
-router.post('/', createTodo);
-router.get('/', getTodos);
-router.put('/:id', updateTodo);
-router.delete('/:id', deleteTodo);
+router.post('/', validate({ body: schemas.createTodoBody }), createTodo);
+router.get('/', validate({ query: schemas.todoQuery }), getTodos);
+router.put('/:id', validate({ params: schemas.idParams, body: schemas.updateTodoBody }), updateTodo);
+router.delete('/:id', validate({ params: schemas.idParams }), deleteTodo);
 
 module.exports = router;
