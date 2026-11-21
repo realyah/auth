@@ -23,7 +23,7 @@ const serializeProfile = (user) => {
   return Object.fromEntries(PROFILE_FIELDS.map((key) => [key, profile[key] ?? null]));
 };
 
-// Owner sees login activity and MFA state; everyone else sees only the public player card
+// Owner sees login activity; everyone else sees only the public player card
 const serializeUser = (user, isSelf) => {
   const publicData = {
     id: user._id,
@@ -35,14 +35,13 @@ const serializeUser = (user, isSelf) => {
   if (!isSelf) return publicData;
   return {
     ...publicData,
-    mfaEnabled: Boolean(user.mfa?.enabled),
     login_status: user.login_status,
     userAgentString: user.userAgentString,
     updatedAt: user.updatedAt,
   };
 };
 
-const PRIVATE_FIELDS = "-password -failed_login_attempts -lock_until -mfa.secret -mfa.pendingSecret -mfa.recoveryCodes -mfa.lastUsedStep";
+const PRIVATE_FIELDS = "-password -failed_login_attempts -lock_until";
 
 // Get the current user's profile, or another player's public profile by :userId
 const getUserProfile = async (req, res, next) => {
