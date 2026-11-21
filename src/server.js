@@ -2,11 +2,14 @@ const mongoose = require('mongoose');
 const app = require('./app');
 const { connectDB } = require('./config/db');
 const { connectRedis, closeRedis } = require('./config/redis');
+const { initGeo } = require('./utils/geo');
+const { startLoginEventRetentionJob } = require('./jobs/loginEventRetention');
 const { PORT } = require('./config');
 
 const startServer = async () => {
   try {
-    await Promise.all([connectDB(), connectRedis()]);
+    await Promise.all([connectDB(), connectRedis(), initGeo()]);
+    startLoginEventRetentionJob();
 
     const server = app.listen(PORT, () => {
       console.log(`Server is running on http://localhost:${PORT}`);
