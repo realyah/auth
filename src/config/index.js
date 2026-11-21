@@ -91,6 +91,11 @@ module.exports = {
   // Optional HTTP endpoint that receives security events as JSON (in addition to stdout)
   SECURITY_LOG_WEBHOOK_URL: process.env.SECURITY_LOG_WEBHOOK_URL || "",
 
+  // Login location tracking: MaxMind GeoLite2-City database (optional) and how long
+  // exact coordinates are kept before only country/city remain
+  GEOIP_DB_PATH: path.resolve(process.env.GEOIP_DB_PATH || path.join(__dirname, "../../data/GeoLite2-City.mmdb")),
+  LOGIN_EVENT_EXACT_RETENTION_DAYS: Number(process.env.LOGIN_EVENT_EXACT_RETENTION_DAYS) || 90,
+
   // Where uploaded files (profile pictures) are stored on disk
   UPLOAD_DIR: path.resolve(process.env.UPLOAD_DIR || path.join(__dirname, "../../uploads")),
 };
