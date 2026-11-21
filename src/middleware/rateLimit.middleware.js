@@ -28,6 +28,5 @@ const createAuthLimiter = ({ name, windowMs = LOGIN_RATE_LIMIT_WINDOW_MS, max = 
 
 const loginLimiter = createAuthLimiter({ name: 'login' });
 const registerLimiter = createAuthLimiter({ name: 'register' });
-const mfaLimiter = createAuthLimiter({ name: 'mfa' });
 
-module.exports = { createAuthLimiter, loginLimiter, registerLimiter, mfaLimiter };
+module.exports = { createAuthLimiter, loginLimiter, registerLimiter };
