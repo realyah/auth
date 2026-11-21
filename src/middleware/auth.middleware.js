@@ -27,22 +27,32 @@ const requireAuth = async (req, res, next) => {
     }
 
     // Load the user on every request so deleted accounts lose access immediately
-    const user = await User.findById(userId).select('username');
+    const user = await User.findById(userId).select('username role');
     if (!user) {
       await destroySession(req, res);
       return res.status(401).json({ error: 'Authentication required' });
     }
 
     req.session.lastSeenAt = now;
-    req.user = { userId: String(user._id), username: user.username };
+    req.user = { userId: String(user._id), username: user.username, role: user.role || 'user' };
     next();
   } catch (error) {
     next(error);
   }
 };
 
+// Use after requireAuth. The role is read from the database on every request.
+const requireRole = (role) => (req, res, next) => {
+  if (req.user?.role !== role) {
+    logSecurityEvent('authz.denied', { req, userId: req.user?.userId, requiredRole: role });
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+};
+
 module.exports = {
   requireAuth,
+  requireRole,
   // Old name kept for legacy imports (controller.js)
   authenticateToken: requireAuth,
 };

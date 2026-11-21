@@ -393,3 +393,91 @@ test('player profile details and avatar upload', async () => {
   assert.equal((await fetch(baseUrl + second.body.avatarUrl)).status, 404);
   assert.equal((await a.request('DELETE', '/api/auth/profile/avatar')).status, 404);
 });
+
+test('login location tracking and admin map API', async () => {
+  const { setGeoReader, pickLocation } = require('../src/utils/geo');
+  const { coarsenOldLoginEvents } = require('../src/jobs/loginEventRetention');
+  const User = require('../src/models/user.model');
+  const LoginEvent = require('../src/models/loginEvent.model');
+
+  // Stand-in for the GeoLite2 database
+  setGeoReader({
+    city: () => ({
+      country: { isoCode: 'LA' },
+      city: { names: { en: 'Vientiane' } },
+      location: { latitude: 17.97, longitude: 102.6, accuracyRadius: 20 },
+    }),
+  });
+  const eventsFor = async (filter, count) => {
+    for (let i = 0; i < 50; i++) { // events are written without blocking the login
+      const found = await LoginEvent.find(filter).sort({ createdAt: 1 }).lean();
+      if (found.length >= count) return found;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    throw new Error('login events not written');
+  };
+
+  const startedAt = new Date();
+  try {
+    const { agent, id } = await registerAndLogin('kim'); // login without GPS -> IP location
+    const gps = createAgent();
+    const ok = await gps.request('POST', '/api/auth/login', {
+      body: { username: 'kim', password: PASSWORD, geo: { lat: 17.9757, lng: 102.6331, accuracy: 12.4 } },
+    });
+    assert.equal(ok.status, 200);
+    const junk = createAgent();
+    const stillOk = await junk.request('POST', '/api/auth/login', {
+      body: { username: 'kim', password: PASSWORD, geo: { lat: 'x', lng: 999 } },
+    });
+    assert.equal(stillOk.status, 200, 'bad GPS never blocks login');
+    await createAgent().request('POST', '/api/auth/login', { body: { username: 'kim', password: 'wrong password!!' } });
+    await createAgent().request('POST', '/api/auth/login', { body: { username: 'nobody-here', password: PASSWORD } });
+
+    const kimEvents = await eventsFor({ user: id }, 4);
+    assert.deepEqual(kimEvents.map((e) => [e.success, e.source]), [
+      [true, 'ip'], [true, 'gps'], [true, 'ip'], [false, 'ip'],
+    ]);
+    assert.equal(kimEvents[0].accuracyM, 20000, 'MaxMind radius km -> m');
+    assert.equal(kimEvents[1].lat, 17.9757);
+    assert.equal(kimEvents[1].accuracyM, 12);
+    assert.equal(kimEvents[1].country, 'LA', 'country/city always come from the IP');
+    const unknown = await eventsFor({ user: null, success: false, createdAt: { $gte: startedAt } }, 1);
+    assert.equal(unknown[0].city, 'Vientiane');
+
+    // GPS sanity checks
+    const ipGeo = { lat: 1, lng: 2, accuracyM: 50000 };
+    assert.equal(pickLocation(ipGeo, { lat: 1, lng: 2, accuracy: 6000 }).source, 'ip', 'too inaccurate');
+    assert.equal(pickLocation(ipGeo, { lat: 91, lng: 2, accuracy: 10 }).source, 'ip', 'out of range');
+
+    // Admin API: login required, admin role required
+    assert.equal((await createAgent().request('GET', '/api/admin/login-events')).status, 401);
+    assert.equal((await agent.request('GET', '/api/admin/login-events')).status, 403);
+    assert.equal((await agent.request('GET', '/api/auth/profile')).body.user.role, 'user');
+
+    await User.updateOne({ _id: id }, { $set: { role: 'admin' } }); // what `npm run make-admin` does
+    const list = await agent.request('GET', '/api/admin/login-events?days=7');
+    assert.equal(list.status, 200);
+    assert.ok(list.body.count >= 5);
+    const gpsRow = list.body.events.find((e) => e.source === 'gps');
+    assert.equal(gpsRow.username, 'kim');
+    assert.equal(gpsRow.accuracyM, 12);
+    const failedOnly = await agent.request('GET', '/api/admin/login-events?success=false');
+    assert.ok(failedOnly.body.events.every((e) => e.success === false));
+    assert.equal((await agent.request('GET', '/api/admin/login-events?days=0')).status, 400);
+    assert.equal((await agent.request('GET', '/api/admin/login-events?userId=bad')).status, 400);
+
+    // Retention: exact points older than 90 days are dropped, country/city stay
+    const old = await LoginEvent.collection.insertOne({
+      user: null, success: true, ip: '203.0.113.9', country: 'TH', city: 'Bangkok',
+      lat: 13.75, lng: 100.5, accuracyM: 20000, source: 'ip',
+      createdAt: new Date(Date.now() - 100 * 24 * 3600 * 1000),
+    });
+    assert.ok((await coarsenOldLoginEvents()) >= 1);
+    const coarsened = await LoginEvent.findById(old.insertedId).lean();
+    assert.equal(coarsened.lat, null);
+    assert.equal(coarsened.city, 'Bangkok');
+    assert.equal((await LoginEvent.findById(kimEvents[1]._id).lean()).lat, 17.9757, 'recent points untouched');
+  } finally {
+    setGeoReader(null);
+  }
+});

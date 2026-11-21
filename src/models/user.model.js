@@ -15,6 +15,12 @@ const userSchema = new mongoose.Schema(
       required: true,
       minlength: 6,
     },
+    // "admin" is granted only with `npm run make-admin -- <username>`, never through the API
+    role: {
+      type: String,
+      enum: ["user", "admin"],
+      default: "user",
+    },
     failed_login_attempts: {
       type: Number,
       default: 0,

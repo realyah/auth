@@ -4,6 +4,7 @@ const router = express.Router();
 const authRoutes = require('./auth.routes');
 const todoRoutes = require('./todo.routes');
 const aboutMeRoutes = require('./aboutMe.routes');
+const adminRoutes = require('./admin.routes');
 
 // Health check endpoint
 router.get('/', (req, res) => {
@@ -14,5 +15,6 @@ router.get('/', (req, res) => {
 router.use('/api/auth', authRoutes);
 router.use('/api/todos', todoRoutes);
 router.use('/api/allaboutme', aboutMeRoutes);
+router.use('/api/admin', adminRoutes);
 
 module.exports = router;

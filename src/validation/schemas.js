@@ -27,9 +27,17 @@ const anyPassword = z.string({ error: 'Password is required' }).min(1, 'Password
 
 const registerBody = z.object({ username, password: newPassword });
 
+// Optional browser GPS. Anything malformed is dropped (never blocks the login);
+// range checks happen in utils/geo.js.
+const loginGeo = z
+  .object({ lat: z.number(), lng: z.number(), accuracy: z.number() })
+  .optional()
+  .catch(undefined);
+
 const loginBody = z.object({
   username: z.string({ error: 'Username is required' }).trim().min(1, 'Username is required').max(30),
   password: anyPassword,
+  geo: loginGeo,
 });
 
 const userIdParams = z.object({ userId: objectId });
@@ -84,8 +92,17 @@ const aboutMeBody = z.object(
   Object.fromEntries(ABOUT_ME_FIELDS.map((key) => [key, optionalText(500)]))
 );
 
+// ---------- Admin ----------
+const loginEventsQuery = z.object({
+  days: z.coerce.number().int().min(1).max(365).default(30),
+  limit: z.coerce.number().int().min(1).max(5000).default(1000),
+  userId: objectId.optional(),
+  success: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
+});
+
 module.exports = {
   idParams,
+  loginEventsQuery,
   userIdParams,
   registerBody,
   loginBody,
