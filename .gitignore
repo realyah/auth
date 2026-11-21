@@ -21,3 +21,6 @@ Thumbs.db
 
 # Uploaded files
 uploads/
+
+# MaxMind GeoIP databases (download separately)
+data/*.mmdb
