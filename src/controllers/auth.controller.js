@@ -1,5 +1,7 @@
 const UAParser = require("ua-parser-js");
 const User = require("../models/user.model");
+const LoginEvent = require("../models/loginEvent.model");
+const { lookupIp, pickLocation } = require("../utils/geo");
 const { hashPassword, verifyPassword, needsRehash, burnVerifyTime } = require("../utils/password");
 const { logSecurityEvent } = require("../utils/securityLogger");
 const { regenerateSession, saveSession, destroySession } = require("../middleware/session.middleware");
@@ -45,6 +47,23 @@ const recordLoginAttempt = (req, user, status) => {
   };
 };
 
+// Store where a login attempt came from (success or failure). Not awaited: a
+// logging problem must never fail or slow down the login itself.
+const recordLoginEvent = (req, user, success) => {
+  const ip = getClientIp(req) || "unknown";
+  const ipGeo = lookupIp(ip);
+  const location = pickLocation(ipGeo, req.validated?.body?.geo);
+  LoginEvent.create({
+    user: user?._id ?? null,
+    success,
+    ip,
+    country: ipGeo.country,
+    city: ipGeo.city,
+    ...location,
+    userAgent: req.get("user-agent")?.slice(0, 300),
+  }).catch((error) => console.error("Record login event error:", error));
+};
+
 // Count a failed password attempt; locks the account at MAX_FAILED_ATTEMPTS
 const registerFailedAttempt = (req, user) => {
   const now = new Date();
@@ -85,6 +104,7 @@ const completeLogin = async (req, res, user) => {
   await saveSession(req);
 
   logSecurityEvent("login.success", { req, level: "info", userId: String(user._id), username: user.username });
+  recordLoginEvent(req, user, true);
 
   return res.json({
     message: "Login successful",
@@ -130,12 +150,13 @@ const registerUser = async (req, res, next) => {
 const loginUser = async (req, res, next) => {
   try {
     const { username, password } = req.validated.body;
+    const user = await User.findOne({ username });
     const fail = (reason, extra = {}) => {
       logSecurityEvent("login.failed", { req, username, reason, ...extra });
+      recordLoginEvent(req, user, false);
       return res.status(401).json({ error: INVALID_LOGIN });
     };
 
-    const user = await User.findOne({ username });
     if (!user) {
       await burnVerifyTime(password); // same timing as a real password check
       return fail("unknown_user");
