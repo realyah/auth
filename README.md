@@ -21,7 +21,7 @@ REST API built with **Express.js** and **MongoDB (Mongoose)**: hardened session 
 │   ├── controllers/
 │   │   ├── auth.controller.js        # Register, login, logout, session, CSRF token
 │   │   ├── profile.controller.js     # Player profile + profile picture
-│   │   ├── admin.controller.js       # Login events for the admin map
+│   │   ├── loginEvent.controller.js  # Login locations: own history + admin map
 │   │   ├── todo.controller.js        # Todo CRUD
 │   │   └── aboutMe.controller.js     # "About Me" page
 │   ├── middleware/
@@ -146,6 +146,7 @@ Responses are JSON. Errors are `{ "error": "message" }`; validation errors (400)
 | `POST` | `/api/auth/login` | Log in with `username`, `password` and optional `geo: { lat, lng, accuracy }`; sets the session cookie | No |
 | `POST` | `/api/auth/logout` | End the session | No |
 | `GET` | `/api/auth/session` | Current user + `idleExpiresAt`, `reauthRequiredAt` | Yes |
+| `GET` | `/api/auth/login-events` | **Your own** login history with locations, successful and failed (`?days=30&limit=100&success=`) | Yes |
 
 Every login failure returns the same `401 "Invalid username or password"`, whether the username is wrong, the password is wrong or the account is locked.
 
@@ -204,6 +205,7 @@ Every login attempt, successful or not, is saved in the `loginevents` collection
 Notes:
 - A missing or malformed `geo` never blocks login, and recording happens after the response, so it never slows login down.
 - A daily job clears exact coordinates after 90 days (`LOGIN_EVENT_EXACT_RETENTION_DAYS`) and keeps country and city.
+- **Who can see what:** every user can see their own login history (`GET /api/auth/login-events`), including failed attempts on their account, so they can spot logins they don't recognize. Only admins see everyone's (`GET /api/admin/login-events`). The user endpoint always uses the logged-in account; a `userId` in the query is ignored.
 - Every time an admin opens the login events, it is recorded in the security log.
 - GPS and IP can both be faked (devtools, VPN). Treat location as a risk signal, never as proof of identity.
 - Location is personal data. Mention IP and location logging in your privacy policy (Thailand PDPA, Laos Law on Electronic Data Protection, GDPR).
